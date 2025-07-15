@@ -1,0 +1,177 @@
+
+from OpenGL.GL import *
+from OpenGL.GLUT import *
+from OpenGL.GLU import *
+
+import random
+import math
+
+WINDOW_WIDTH, WINDOW_HEIGHT = 1000, 1000
+rain_start_points = []
+rain_end_points = []
+rain_speed = 0.5
+background_brightness = 1.0
+brightness_step = 0.05
+rain_shift = 0.1
+rain_angle_counter = 0
+initial_state = []
+
+for x in range(-255, 255, 5):
+    random_y = random.randint(240, 250)
+    rain_start_points.append([x, 255])
+    rain_end_points.append([x, random_y])
+
+rain_index = 0
+while rain_start_points[-1][1] >= -255:
+    current_len = len(rain_start_points)
+    for i in range(rain_index, current_len):
+        random_drop = random.randint(15, 20)
+        rain_start_points.append([rain_end_points[i][0], rain_end_points[i][1] - 10])
+        rain_end_points.append([rain_start_points[-1][0], rain_start_points[-1][1] - random_drop])
+        if rain_start_points[-1][1] <= -255:
+            break
+    rain_index = current_len
+
+def draw_scene():
+    glBegin(GL_QUADS)
+    glColor3f(background_brightness, background_brightness, background_brightness)
+    glVertex2d(-600, 600)
+    glVertex2d(600, 600)
+    glVertex2d(600, -600)
+    glVertex2d(-600, -600)
+    glEnd()
+
+    glBegin(GL_TRIANGLES)
+    glColor3f(0.4, 0.0, 0.0)
+    glVertex2d(-100, 70)
+    glVertex2d(100, 70)
+    glVertex2d(0, 150)
+    glEnd()
+
+    glBegin(GL_QUADS)
+    glColor3f(0.4, 0.2, 0)
+    glVertex2d(-80, 70)
+    glVertex2d(80, 70)
+    glVertex2d(80, -70)
+    glVertex2d(-80, -70)
+    glEnd()
+
+    glBegin(GL_QUADS)
+    glColor3f(1, 1, 0)
+    glVertex2d(-55, 5)
+    glVertex2d(-20, 5)
+    glVertex2d(-20, -70)
+    glVertex2d(-55, -70)
+    glEnd()
+
+    glBegin(GL_QUADS)
+    glColor3f(1, 1, 0)
+    glVertex2d(20, 10)
+    glVertex2d(50, 10)
+    glVertex2d(50, 40)
+    glVertex2d(20, 40)
+    glEnd()
+
+    glLineWidth(3)
+    glBegin(GL_LINES)
+    glColor3f(0, 0, 0)
+    glVertex2d(35, 10)
+    glVertex2d(35, 40)
+    glVertex2d(50, 25)
+    glVertex2d(20, 25)
+    glEnd()
+
+    glPointSize(5)
+    glBegin(GL_POINTS)
+    glColor3f(0, 0, 0)
+    glVertex2f(-25, -37)
+    glEnd()
+
+def draw_rain(start_points, end_points):
+    glColor3f(0, 1, 1)
+    glPointSize(3)
+    for i in range(0, len(start_points)):
+        x1, y1 = start_points[i]
+        x2, y2 = end_points[i]
+        glLineWidth(1)
+        glBegin(GL_LINES)
+        glVertex2f(x1, y1)
+        glVertex2f(x2, y2)
+        glEnd()
+
+def display():
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    glClearColor(0, 0, 0, 0)
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    glMatrixMode(GL_MODELVIEW)
+    glLoadIdentity()
+    gluLookAt(0, 0, 200, 0, 0, 0, 0, 1, 0)
+    glMatrixMode(GL_MODELVIEW)
+
+    draw_scene()
+    draw_rain(rain_start_points, rain_end_points)
+    glutSwapBuffers()
+
+def animate():
+    global rain_angle_counter
+    glutPostRedisplay()
+    for i in range(0, len(rain_start_points)):
+        if rain_end_points[i][1] >= -255:
+            rain_start_points[i][1] = (rain_start_points[i][1] - rain_speed)
+            rain_end_points[i][1] = (rain_end_points[i][1] - rain_speed)
+        else:
+            drop_length = abs(rain_start_points[i][1] - rain_end_points[i][1])
+            rain_start_points[i][1] = 255
+            rain_end_points[i][1] = 255 - drop_length
+
+def special_key_listener(key, x, y):
+    global rain_speed, rain_shift, rain_angle_counter, initial_state
+    if key == GLUT_KEY_UP:
+        rain_speed *= 2
+        print("Speed Increased")
+    if key == GLUT_KEY_DOWN:
+        rain_speed /= 2
+        print("Speed Decreased")
+    if key == GLUT_KEY_RIGHT:
+        rain_angle_counter += 1
+        initial_state = [[], []]
+        for i in range(len(rain_end_points)):
+            rain_end_points[i][0] += rain_shift
+    if key == GLUT_KEY_LEFT:
+        rain_angle_counter -= 1
+        for i in range(len(rain_end_points)):
+            rain_end_points[i][0] -= rain_shift
+    glutPostRedisplay()
+
+def keyboard_listener(key, x, y):
+    global background_brightness, brightness_step
+    if key == b'd':
+        if background_brightness <= 1:
+            background_brightness += brightness_step
+    if key == b'n':
+        if background_brightness >= -1:
+            background_brightness -= brightness_step
+
+    glutPostRedisplay()
+
+def init():
+    glClearColor(0, 0, 0, 0)
+    glMatrixMode(GL_PROJECTION)
+    glLoadIdentity()
+    gluPerspective(104, 1, 1, 1000.0)
+
+glutInit()
+glutInitWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT)
+glutInitWindowPosition(0, 0)
+glutInitDisplayMode(GLUT_DEPTH | GLUT_DOUBLE | GLUT_RGB)
+
+window = glutCreateWindow(b"OpenGL Coding Practice")
+init()
+
+glutDisplayFunc(display)
+glutIdleFunc(animate)
+
+glutKeyboardFunc(keyboard_listener)
+glutSpecialFunc(special_key_listener)
+
+glutMainLoop()
