@@ -1,0 +1,151 @@
+from OpenGL.GL import *
+from OpenGL.GLUT import *
+from OpenGL.GLU import *
+import random
+
+WIN_W, WIN_H = 500, 500
+all_points = []
+move_speed = 0.1
+curr_point_size = 5
+resize_flag = 0
+resize_dir = 0
+motion_flag = 0
+
+def draw_all_points(all_points):
+    glPointSize(curr_point_size)
+    for pt in all_points:
+        glColor3f(pt[1][0], pt[1][1], pt[1][2])
+        glBegin(GL_POINTS)
+        glVertex2f(pt[0][0], pt[0][1])
+        glEnd()
+
+def to_gl_coords(mouse_x, mouse_y):
+    global WIN_W, WIN_H
+    gl_x = mouse_x - (WIN_W / 2)
+    gl_y = (WIN_H / 2) - mouse_y
+    return [gl_x, gl_y]
+
+def render_scene():
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    glClearColor(0, 0, 0, 0)
+    glMatrixMode(GL_MODELVIEW)
+    glLoadIdentity()
+    gluLookAt(0, 0, 200, 0, 0, 0, 0, 1, 0)
+    glMatrixMode(GL_MODELVIEW)
+
+    draw_all_points(all_points)
+
+    glutSwapBuffers()
+
+def mouse_handler(btn, btn_state, mx, my):
+    global all_points, resize_flag, motion_flag
+    if btn == GLUT_LEFT_BUTTON:
+        if btn_state == GLUT_DOWN:
+            resize_flag = 1
+
+    if btn == GLUT_RIGHT_BUTTON:
+        if btn_state == GLUT_DOWN:
+            motion_flag = 1
+            color_rgb = []
+            for _ in range(3):
+                color_rgb.append(random.randint(0, 255) / 255)
+            move_dir = random.randint(1, 4)
+            all_points.append([to_gl_coords(mx, my), color_rgb, move_dir])
+
+    glutPostRedisplay()
+
+def special_key_handler(special_key, mx, my):
+    global move_speed, motion_flag
+    if special_key == GLUT_KEY_UP:
+        if move_speed == 0:
+            motion_flag = 1
+            move_speed = 0.01
+        move_speed *= 2
+        print("Speed Increased")
+    if special_key == GLUT_KEY_DOWN:
+        if move_speed == 0:
+            motion_flag = 1
+            move_speed = 0.01
+        move_speed /= 2
+        print("Speed Decreased")
+
+    glutPostRedisplay()
+
+def keyboard_handler(key_char, mx, my):
+    global move_speed, motion_flag, resize_flag
+    if key_char == b' ':
+        resize_flag = 0
+        motion_flag = 0
+        move_speed = 0
+
+    glutPostRedisplay()
+
+def animate_points():
+    global all_points, move_speed, curr_point_size, resize_flag, resize_dir
+
+    if motion_flag:
+        for pt in all_points:
+            move_dir = pt[2]
+            delta_x, delta_y = 0, 0
+
+            if move_dir == 1:  
+                delta_x, delta_y = move_speed, move_speed
+            elif move_dir == 2:  
+                delta_x, delta_y = -move_speed, move_speed
+            elif move_dir == 3:  
+                delta_x, delta_y = -move_speed, -move_speed
+            elif move_dir == 4:  
+                delta_x, delta_y = move_speed, -move_speed
+
+            pt[0][0] += delta_x
+            pt[0][1] += delta_y
+
+            if pt[0][0] > WIN_W / 2:
+                pt[0][0] = WIN_W / 2
+                pt[2] = random.choice([2, 3, 4])  
+            elif pt[0][0] < -WIN_W / 2:
+                pt[0][0] = -WIN_W / 2
+                pt[2] = random.choice([1, 3, 4])  
+
+            if pt[0][1] > WIN_H / 2:
+                pt[0][1] = WIN_H / 2
+                pt[2] = random.choice([1, 2, 3])  
+            elif pt[0][1] < -WIN_H / 2:
+                pt[0][1] = -WIN_H / 2
+                pt[2] = random.choice([1, 2, 4])  
+
+    if resize_flag:
+        if resize_dir == 0:
+            curr_point_size -= 0.1  
+            if curr_point_size <= 1.0:
+                resize_dir = 1
+        else:
+            curr_point_size += 0.1  
+            if curr_point_size >= 10.0:
+                resize_dir = 0
+
+    glutPostRedisplay()
+
+
+def setup_gl():
+    glClearColor(0, 0, 0, 0)
+    glMatrixMode(GL_PROJECTION)
+    glLoadIdentity()
+    gluPerspective(104, 1, 1, 1000.0)
+
+glutInit()
+glutInitWindowSize(WIN_W, WIN_H)
+glutInitWindowPosition(0, 0)
+glutInitDisplayMode(GLUT_DEPTH | GLUT_DOUBLE | GLUT_RGB)
+
+main_window = glutCreateWindow(b"Amazing Box")
+setup_gl()
+
+glutDisplayFunc(render_scene)
+glutIdleFunc(animate_points)
+
+glutKeyboardFunc(keyboard_handler)
+glutSpecialFunc(special_key_handler)
+glutMouseFunc(mouse_handler)
+
+glutMainLoop()
