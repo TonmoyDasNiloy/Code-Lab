@@ -1,0 +1,793 @@
+from OpenGL.GL import *
+from OpenGL.GLUT import *
+from OpenGL.GLU import *
+import random
+import math
+import time
+from collections import deque
+import heapq
+
+# Initialize quadric
+quad = gluNewQuadric()
+
+# Constants
+cell_size = 150
+wall_height = 100
+spike_max_height = wall_height / 2
+eye_height = 105
+player_radius = 20
+enemy_radius = 10
+reward_radius = 10
+spike_radius = 10
+player_speed = 100
+max_speed = 200
+acceleration = 100
+deceleration = 50
+gravity = 500
+initial_jump_velocity = 250
+
+# Global variables
+mazes = []
+last_maze_index = -1
+current_maze = None
+maze_directions = None
+dist_from_exit = None
+maze_offset_x = 0
+maze_offset_y = 0
+maze_height = 0
+maze_width = 0
+player_position = [0, 0, 0]
+player_angle = 0.0
+current_player_speed = player_speed
+has_sword = False
+is_jumping = False
+jump_velocity = 0.0
+player_stop_time = 0.0
+keys_pressed = {'w': False, 's': False, 'a': False, 'd': False, ' ': False}
+special_keys_pressed = {'up': False, 'down': False, 'left': False, 'right': False}
+is_cheat_mode = False
+cheat_path = []
+cheat_path_index = 1
+is_game_over = False
+current_level = 1
+cumulative_points = 0
+current_points = 0
+required_points = 0
+enemies_killed_count = 0
+camera_angle = 0.0
+camera_height = 300.0
+camera_distance = 300.0
+is_first_person = True
+previous_time = time.time()
+mobile_enemy_position = [0, 0, 0]
+is_mobile_enemy_alive = True
+mobile_enemy_death_time = 0.0
+is_mobile_enemy_jumping = False
+mobile_enemy_jump_velocity = 0.0
+static_enemies = []
+rewards = []
+spikes = []
+maze_start_position = (0, 0, 0)
+maze_exit_position = (0, 0, 0)
+maze_exit_grid = (0, 0)
+maze_start_grid = (0, 0)
+
+# Button constants
+button_x = 400
+button_y = 730  # From bottom, placed at top
+button_width = 200
+button_height = 50
+
+def generate_maze(width, height):
+    if width % 2 == 0:
+        width += 1
+    if height % 2 == 0:
+        height += 1
+    maze = [[1 for _ in range(width)] for _ in range(height)]
+    def carve(x, y):
+        maze[y][x] = 0
+        dirs = [(0, -1), (1, 0), (0, 1), (-1, 0)]
+        random.shuffle(dirs)
+        for dx, dy in dirs:
+            nx, ny = x + dx * 2, y + dy * 2
+            if 0 <= nx < width and 0 <= ny < height and maze[ny][nx] == 1:
+                maze[y + dy][x + dx] = 0
+                carve(nx, ny)
+    carve(1, 1)
+    maze[1][0] = 0
+    maze[height - 2][width - 1] = 0
+    return maze
+
+def find_dead_ends(maze):
+    height = len(maze)
+    width = len(maze[0])
+    dead_ends = []
+    for row in range(1, height - 1):
+        for col in range(1, width - 1):
+            if maze[row][col] == 0:
+                neighbors_count = sum(1 for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)] if maze[row + dr][col + dc] == 0)
+                if neighbors_count == 1:
+                    dead_ends.append((row, col))
+    return dead_ends
+
+def generate_mazes(num_mazes=10, maze_width=21, maze_height=21):
+    generated_mazes = []
+    while len(generated_mazes) < num_mazes:
+        maze = generate_maze(maze_width, maze_height)
+        dead_ends = find_dead_ends(maze)
+        if len(dead_ends) >= 8:
+            generated_mazes.append(maze)
+    return generated_mazes
+
+def compute_directions(maze, exit_pos):
+    height = len(maze)
+    width = len(maze[0])
+    directions = [[None for _ in range(width)] for _ in range(height)]
+    visited = [[False for _ in range(width)] for _ in range(height)]
+    parent = [[None for _ in range(width)] for _ in range(height)]
+    dist = [[0 for _ in range(width)] for _ in range(height)]
+    queue = deque()
+    queue.append(exit_pos)
+    visited[exit_pos[0]][exit_pos[1]] = True
+    dist[exit_pos[0]][exit_pos[1]] = 0
+    while queue:
+        current = queue.popleft()
+        row, col = current
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = row + dr, col + dc
+            if 0 <= nr < height and 0 <= nc < width and maze[nr][nc] == 0 and not visited[nr][nc]:
+                visited[nr][nc] = True
+                parent[nr][nc] = (row, col)
+                dist[nr][nc] = dist[row][col] + 1
+                queue.append((nr, nc))
+    for row in range(height):
+        for col in range(width):
+            if parent[row][col]:
+                pr, pc = parent[row][col]
+                dr, dc = pr - row, pc - col
+                directions[row][col] = (dr, dc)
+    return directions, dist
+
+def get_grid_position(pos):
+    col = int((pos[0] + maze_offset_x) // cell_size)
+    row = int((pos[1] + maze_offset_y) // cell_size)
+    return (row, col)
+
+def grid_to_3d_position(grid_pos):
+    row, col = grid_pos
+    return [col * cell_size - maze_offset_x + cell_size / 2, row * cell_size - maze_offset_y + cell_size / 2, 0]
+
+def is_collision_with_wall(next_x, next_y):
+    col = int((next_x + maze_offset_x) // cell_size)
+    row = int((next_y + maze_offset_y) // cell_size)
+    if 0 <= row < maze_height and 0 <= col < maze_width and current_maze[row][col] == 0:
+        return False
+    return True
+
+def a_star_pathfinding(maze, start_grid, goal_grid):
+    def heuristic(a, b):
+        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+    frontier = []
+    heapq.heappush(frontier, (0, start_grid))
+    came_from = {}
+    cost_so_far = {}
+    came_from[start_grid] = None
+    cost_so_far[start_grid] = 0
+    while frontier:
+        _, current = heapq.heappop(frontier)
+        if current == goal_grid:
+            break
+        for next_grid in get_neighbors(current):
+            new_cost = cost_so_far[current] + 1
+            if next_grid not in cost_so_far or new_cost < cost_so_far[next_grid]:
+                cost_so_far[next_grid] = new_cost
+                priority = new_cost + heuristic(next_grid, goal_grid)
+                heapq.heappush(frontier, (priority, next_grid))
+                came_from[next_grid] = current
+    current = goal_grid
+    path = []
+    while current != start_grid:
+        path.append(grid_to_3d_position(current))
+        current = came_from.get(current)
+        if current is None:
+            return []
+    path.append(grid_to_3d_position(start_grid))
+    path.reverse()
+    return path
+
+def get_neighbors(grid_pos):
+    row, col = grid_pos
+    neighbors = []
+    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        nr, nc = row + dr, col + dc
+        if 0 <= nr < maze_height and 0 <= nc < maze_width and current_maze[nr][nc] == 0:
+            neighbors.append((nr, nc))
+    return neighbors
+
+def find_open_cell_at_distance(start_grid, target_dist):
+    queue = deque()
+    queue.append(start_grid)
+    visited = set()
+    visited.add(start_grid)
+    dist_map = {start_grid: 0}
+    candidates = []
+    max_pos = start_grid
+    max_graph_dist = 0
+    while queue:
+        current = queue.popleft()
+        current_dist = dist_map[current]
+        if current_dist == target_dist:
+            candidates.append(current)
+        if current_dist > max_graph_dist:
+            max_graph_dist = current_dist
+            max_pos = current
+        for nr, nc in get_neighbors(current):
+            n = (nr, nc)
+            if n not in visited:
+                visited.add(n)
+                dist_map[n] = current_dist + 1
+                queue.append(n)
+    if candidates:
+        max_exit_dist = -1
+        chosen = None
+        for c in candidates:
+            d = dist_from_exit[c[0]][c[1]]
+            if d > max_exit_dist:
+                max_exit_dist = d
+                chosen = c
+        return chosen
+    else:
+        return max_pos
+
+def is_straight_path(row, col):
+    if current_maze[row][col] != 0:
+        return False
+    neighbors = []
+    for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+        nr, nc = row + dr, col + dc
+        if 0 <= nr < maze_height and 0 <= nc < maze_width and current_maze[nr][nc] == 0:
+            neighbors.append((dr, dc))
+    if len(neighbors) != 2:
+        return False
+    d1, d2 = neighbors
+    if d1[0] + d2[0] == 0 and d1[1] + d2[1] == 0:
+        return True
+    return False
+
+def load_level():
+    global last_maze_index, current_maze, maze_directions, dist_from_exit, maze_offset_x, maze_offset_y, maze_height, maze_width, player_position, mobile_enemy_position, static_enemies, rewards, spikes, current_points, required_points, has_sword, is_cheat_mode, is_game_over, cheat_path, cheat_path_index, is_mobile_enemy_alive, maze_start_position, maze_exit_position, maze_exit_grid, maze_start_grid
+    is_game_over = False
+    is_cheat_mode = False
+    has_sword = False
+    current_points = 0
+    cheat_path = []
+    cheat_path_index = 1
+    maze_index = random.randint(0, len(mazes) - 1)
+    while maze_index == last_maze_index:
+        maze_index = random.randint(0, len(mazes) - 1)
+    last_maze_index = maze_index
+    current_maze = mazes[maze_index]
+    maze_directions, dist_from_exit = compute_directions(current_maze, (len(current_maze) - 2, len(current_maze[0]) - 1))
+    maze_height = len(current_maze)
+    maze_width = len(current_maze[0])
+    maze_offset_x = maze_width * cell_size / 2
+    maze_offset_y = maze_height * cell_size / 2
+    maze_start_grid = (1, 1)  # Moved player inside
+    maze_exit_grid = (maze_height - 2, maze_width - 1)
+    maze_start_position = grid_to_3d_position(maze_start_grid)
+    maze_exit_position = grid_to_3d_position(maze_exit_grid)
+    player_position = maze_start_position.copy()
+    enemy_grid = (1, 0)  # Behind at entrance
+    mobile_enemy_position = grid_to_3d_position(enemy_grid)
+    is_mobile_enemy_alive = True
+    dead_ends = find_dead_ends(current_maze)
+    random.shuffle(dead_ends)
+    num_rewards = len(dead_ends)
+    point_giving_count = (num_rewards + 1) // 2
+    required_points = point_giving_count - 1 if point_giving_count > 0 else 0
+    rewards = []
+    static_enemies = []
+    for i in range(num_rewards):
+        row, col = dead_ends[i]
+        reward_pos = grid_to_3d_position((row, col))
+        if i % 2 == 1:
+            reward_type = 'sword'
+        else:
+            reward_type = random.choice(['coin', 'gem'])
+        rewards.append((reward_pos, reward_type))
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = row + dr, col + dc
+            if current_maze[nr][nc] == 0:
+                enemy_pos = grid_to_3d_position((nr, nc))
+                static_enemies.append({'pos': enemy_pos, 'countdown': 0.0, 'alive': True})
+                break
+    num_spikes = 5 + current_level * 2
+    spikes = []
+    for _ in range(num_spikes):
+        while True:
+            row = random.randint(1, maze_height - 1)
+            col = random.randint(1, maze_width - 1)
+            if current_maze[row][col] == 0 and is_straight_path(row, col):
+                pos = grid_to_3d_position((row, col))
+                if all(math.hypot(pos[0] - p[0], pos[1] - p[1]) > cell_size for p, _ in rewards) and all(math.hypot(pos[0] - e['pos'][0], pos[1] - e['pos'][1]) > cell_size for e in static_enemies) and math.hypot(pos[0] - maze_start_position[0], pos[1] - maze_start_position[1]) > cell_size:
+                    spikes.append({'pos': pos, 'height': 0.0, 'active': False})
+                    break
+
+def keyboardListener(key, x, y):
+    global is_jumping, jump_velocity, is_cheat_mode, cheat_path, cheat_path_index, is_first_person, current_level, cumulative_points, enemies_killed_count
+    if key == b'w':
+        keys_pressed['w'] = True
+    if key == b's':
+        keys_pressed['s'] = True
+    if key == b'a':
+        keys_pressed['a'] = True
+    if key == b'd':
+        keys_pressed['d'] = True
+    if key == b' ':
+        if not is_jumping:
+            is_jumping = True
+            jump_velocity = initial_jump_velocity
+    if key == b'c':
+        is_cheat_mode = not is_cheat_mode
+        if is_cheat_mode:
+            if not is_first_person:
+                is_first_person = True
+            cheat_path = a_star_pathfinding(current_maze, get_grid_position(player_position), maze_exit_grid)
+            cheat_path_index = 1
+    if key == b'r':
+        current_level = 1
+        cumulative_points = 0
+        enemies_killed_count = 0
+        load_level()
+    glutPostRedisplay()
+
+def keyboardUpListener(key, x, y):
+    if key == b'w':
+        keys_pressed['w'] = False
+    if key == b's':
+        keys_pressed['s'] = False
+    if key == b'a':
+        keys_pressed['a'] = False
+    if key == b'd':
+        keys_pressed['d'] = False
+    glutPostRedisplay()
+
+def specialKeyListener(key, x, y):
+    if key == GLUT_KEY_UP:
+        special_keys_pressed['up'] = True
+    if key == GLUT_KEY_DOWN:
+        special_keys_pressed['down'] = True
+    if key == GLUT_KEY_LEFT:
+        special_keys_pressed['left'] = True
+    if key == GLUT_KEY_RIGHT:
+        special_keys_pressed['right'] = True
+    glutPostRedisplay()
+
+def specialUpListener(key, x, y):
+    if key == GLUT_KEY_UP:
+        special_keys_pressed['up'] = False
+    if key == GLUT_KEY_DOWN:
+        special_keys_pressed['down'] = False
+    if key == GLUT_KEY_LEFT:
+        special_keys_pressed['left'] = False
+    if key == GLUT_KEY_RIGHT:
+        special_keys_pressed['right'] = False
+    glutPostRedisplay()
+
+def mouseListener(button, state, x, y):
+    global is_first_person, current_level, cumulative_points, enemies_killed_count
+    if button == GLUT_RIGHT_BUTTON and state == GLUT_DOWN:
+        is_first_person = not is_first_person
+    if button == GLUT_LEFT_BUTTON and state == GLUT_DOWN:
+        flipped_y = 800 - y  # Flip y-coordinate
+        if button_x <= x <= button_x + button_width and button_y <= flipped_y <= button_y + button_height:
+            current_level = 1
+            cumulative_points = 0
+            enemies_killed_count = 0
+            load_level()
+    glutPostRedisplay()
+
+def idle():
+    global previous_time, current_player_speed, player_angle, is_jumping, jump_velocity, is_mobile_enemy_alive, mobile_enemy_death_time, is_game_over, is_cheat_mode, cheat_path_index, current_level, cumulative_points, current_points, player_stop_time, is_mobile_enemy_jumping, mobile_enemy_jump_velocity, enemies_killed_count, has_sword, camera_angle, camera_height, mobile_enemy_position
+    current_time = time.time()
+    delta_time = current_time - previous_time
+    previous_time = current_time
+    if is_game_over:
+        glutPostRedisplay()
+        return
+    if not (keys_pressed['w'] or keys_pressed['s'] or keys_pressed['a'] or keys_pressed['d'] or keys_pressed[' ']):
+        player_stop_time += delta_time
+    else:
+        player_stop_time = 0
+    if is_cheat_mode:
+        if cheat_path_index < len(cheat_path):
+            next_position = cheat_path[cheat_path_index]
+            dir_x = next_position[0] - player_position[0]
+            dir_y = next_position[1] - player_position[1]
+            distance = math.hypot(dir_x, dir_y)
+            move_distance = player_speed * delta_time
+            if distance <= move_distance:
+                player_position[0] = next_position[0]
+                player_position[1] = next_position[1]
+                cheat_path_index += 1
+            else:
+                player_position[0] += (dir_x / distance) * move_distance
+                player_position[1] += (dir_y / distance) * move_distance
+        else:
+            current_level += 1
+            cumulative_points += current_points
+            load_level()
+            is_cheat_mode = False
+    else:
+        if keys_pressed['w']:
+            current_player_speed = min(current_player_speed + acceleration * delta_time, max_speed)
+        else:
+            current_player_speed = max(current_player_speed - deceleration * delta_time, player_speed)
+        angle_radians = math.radians(player_angle)
+        delta_x = math.cos(angle_radians) * current_player_speed * delta_time
+        delta_y = math.sin(angle_radians) * current_player_speed * delta_time
+        if keys_pressed['w']:
+            next_x = player_position[0] + delta_x
+            next_y = player_position[1] + delta_y
+            if not is_collision_with_wall(next_x, next_y):
+                player_position[0] = next_x
+                player_position[1] = next_y
+        if keys_pressed['s']:
+            next_x = player_position[0] - delta_x
+            next_y = player_position[1] - delta_y
+            if not is_collision_with_wall(next_x, next_y):
+                player_position[0] = next_x
+                player_position[1] = next_y
+        if keys_pressed['a']:
+            player_angle += 90 * delta_time
+        if keys_pressed['d']:
+            player_angle -= 90 * delta_time
+        if is_jumping:
+            player_position[2] += jump_velocity * delta_time
+            jump_velocity -= gravity * delta_time
+            if player_position[2] < 0:
+                player_position[2] = 0
+                is_jumping = False
+        if is_mobile_enemy_alive:
+            path = a_star_pathfinding(current_maze, get_grid_position(mobile_enemy_position), get_grid_position(player_position))
+            if path and len(path) > 1:
+                next_pos = path[1]
+                dir_x = next_pos[0] - mobile_enemy_position[0]
+                dir_y = next_pos[1] - mobile_enemy_position[1]
+                distance = math.hypot(dir_x, dir_y)
+                move_distance = player_speed * delta_time
+                if distance <= move_distance:
+                    mobile_enemy_position[0] = next_pos[0]
+                    mobile_enemy_position[1] = next_pos[1]
+                else:
+                    mobile_enemy_position[0] += (dir_x / distance) * move_distance
+                    mobile_enemy_position[1] += (dir_y / distance) * move_distance
+        else:
+            if current_time - mobile_enemy_death_time > 2:
+                is_mobile_enemy_alive = True
+                player_grid = get_grid_position(player_position)
+                enemy_grid = find_open_cell_at_distance(player_grid, 5)
+                mobile_enemy_position = grid_to_3d_position(enemy_grid)
+        for spike in spikes:
+            enemy_dist_to_spike = math.hypot(mobile_enemy_position[0] - spike['pos'][0], mobile_enemy_position[1] - spike['pos'][1])
+            if enemy_dist_to_spike < 30 and is_mobile_enemy_alive:
+                if not is_mobile_enemy_jumping:
+                    is_mobile_enemy_jumping = True
+                    mobile_enemy_jump_velocity = initial_jump_velocity
+        if is_mobile_enemy_jumping:
+            mobile_enemy_position[2] += mobile_enemy_jump_velocity * delta_time
+            mobile_enemy_jump_velocity -= gravity * delta_time
+            if mobile_enemy_position[2] < 0:
+                mobile_enemy_position[2] = 0
+                is_mobile_enemy_jumping = False
+        if is_mobile_enemy_alive:
+            dist_to_mobile = math.hypot(player_position[0] - mobile_enemy_position[0], player_position[1] - mobile_enemy_position[1])
+            if dist_to_mobile < player_radius + enemy_radius and player_stop_time > 0.2:
+                if has_sword:
+                    is_mobile_enemy_alive = False
+                    mobile_enemy_death_time = current_time
+                    enemies_killed_count += 1
+                    cumulative_points += 2
+                else:
+                    is_game_over = True
+        for enemy in static_enemies:
+            if enemy['alive']:
+                dist_to_static = math.hypot(player_position[0] - enemy['pos'][0], player_position[1] - enemy['pos'][1])
+                if dist_to_static < 50:
+                    if enemy['countdown'] == 0:
+                        enemy['countdown'] = current_time
+                    if current_time - enemy['countdown'] > 3:
+                        is_game_over = True
+                else:
+                    enemy['countdown'] = 0
+                if dist_to_static < player_radius + enemy_radius:
+                    if has_sword:
+                        enemy['alive'] = False
+                        enemies_killed_count += 1
+                        cumulative_points += 2
+                    else:
+                        is_game_over = True
+        reward_index = 0
+        while reward_index < len(rewards):
+            pos, reward_type = rewards[reward_index]
+            dist_to_reward = math.hypot(player_position[0] - pos[0], player_position[1] - pos[1])
+            if dist_to_reward < player_radius + reward_radius:
+                has_sword = False
+                if reward_type == 'sword':
+                    has_sword = True
+                else:
+                    current_points += 1
+                del rewards[reward_index]
+            else:
+                reward_index += 1
+        for spike in spikes:
+            dist_to_spike = math.hypot(player_position[0] - spike['pos'][0], player_position[1] - spike['pos'][1])
+            if dist_to_spike < 50:
+                spike['active'] = True
+            if spike['active']:
+                spike['height'] = min(spike['height'] + 200 * delta_time, spike_max_height)
+            else:
+                spike['height'] = max(spike['height'] - 200 * delta_time, 0)
+            if dist_to_spike < player_radius + spike_radius and player_position[2] < spike['height']:
+                is_game_over = True
+        dist_to_exit = math.hypot(player_position[0] - maze_exit_position[0], player_position[1] - maze_exit_position[1])
+        if dist_to_exit < 30 and current_points >= required_points:
+            current_level += 1
+            cumulative_points += current_points
+            load_level()
+    if special_keys_pressed['left']:
+        camera_angle -= 50 * delta_time
+    if special_keys_pressed['right']:
+        camera_angle += 50 * delta_time
+    if special_keys_pressed['up']:
+        camera_height += 100 * delta_time
+    if special_keys_pressed['down']:
+        camera_height -= 100 * delta_time
+    glutPostRedisplay()
+
+def draw_text(x, y, text, font=GLUT_BITMAP_HELVETICA_18):
+    glColor3f(1, 1, 1)
+    glMatrixMode(GL_PROJECTION)
+    glPushMatrix()
+    glLoadIdentity()
+    gluOrtho2D(0, 1000, 0, 800)
+    glMatrixMode(GL_MODELVIEW)
+    glPushMatrix()
+    glLoadIdentity()
+    glRasterPos2f(x, y)
+    for ch in text:
+        glutBitmapCharacter(font, ord(ch))
+    glPopMatrix()
+    glMatrixMode(GL_PROJECTION)
+    glPopMatrix()
+    glMatrixMode(GL_MODELVIEW)
+
+def draw_human(pos, is_player, has_sword_local, scale=1.0):
+    glPushMatrix()
+    glTranslatef(pos[0], pos[1], pos[2])
+    glScale(scale, scale, scale)
+    if is_game_over and is_player:
+        glRotatef(90, 1, 0, 0)
+    if is_player:
+        glRotatef(player_angle, 0, 0, 1)
+    # Legs
+    if is_player:
+        glColor3f(0, 0, 1)
+    else:
+        glColor3f(0.5, 0, 0)
+    for side in [-1, 1]:
+        glPushMatrix()
+        glTranslatef(0, side * 5, 0)
+        gluCylinder(quad, 5, 5, 30, 10, 10)
+        glPopMatrix()
+    # Body
+    if is_player:
+        glColor3f(0, 1, 0)
+    else:
+        glColor3f(1, 0, 0)
+    glPushMatrix()
+    glTranslatef(0, 0, 30 + 30)
+    glScalef(20, 10, 60)
+    glutSolidCube(1)
+    glPopMatrix()
+    # Head
+    if is_player:
+        glColor3f(1, 0.8, 0.6)
+    else:
+        glColor3f(1, 0, 0)
+    glPushMatrix()
+    glTranslatef(0, 0, 90 + 15)
+    gluSphere(quad, 15, 10, 10)
+    glPopMatrix()
+    # Arms
+    if is_player:
+        glColor3f(1, 1, 0)
+    else:
+        glColor3f(0.8, 0, 0)
+    for side in [-1, 1]:
+        glPushMatrix()
+        glTranslatef(0, side * 5, 70)
+        glRotatef(90, 0, 1, 0)
+        gluCylinder(quad, 5, 5, 20, 10, 10)
+        glPopMatrix()
+    # Sword if has
+    if has_sword_local:
+        glColor3f(0.5, 0.5, 0.5)
+        glPushMatrix()
+        glTranslatef(20, 5, 70)
+        glRotatef(90, 0, 1, 0)
+        gluCylinder(quad, 2, 2, 20, 10, 10)
+        glPopMatrix()
+    glPopMatrix()
+
+def draw_player():
+    draw_human(player_position, True, has_sword)
+
+def draw_enemy(pos, scale=1.0):
+    draw_human(pos, False, True, scale)
+
+def draw_maze():
+    glBegin(GL_QUADS)
+    for row in range(maze_height):
+        for col in range(maze_width):
+            if current_maze[row][col] == 0:
+                glColor3f(0, 0, 0)
+                x1 = col * cell_size - maze_offset_x
+                y1 = row * cell_size - maze_offset_y
+                x2 = x1 + cell_size
+                y2 = y1 + cell_size
+                glVertex3f(x1, y1, 0)
+                glVertex3f(x2, y1, 0)
+                glVertex3f(x2, y2, 0)
+                glVertex3f(x1, y2, 0)
+    glEnd()
+    for row in range(maze_height):
+        for col in range(maze_width):
+            if current_maze[row][col] == 1:
+                glPushMatrix()
+                x = col * cell_size - maze_offset_x + cell_size / 2
+                y = row * cell_size - maze_offset_y + cell_size / 2
+                glTranslatef(x, y, wall_height / 2)
+                glColor3f(0.6, 0.3, 0.3)
+                glutSolidCube(cell_size)
+                glPopMatrix()
+
+def draw_arrows():
+    for row in range(maze_height):
+        for col in range(maze_width):
+            if current_maze[row][col] == 0 and maze_directions[row][col]:
+                dr, dc = maze_directions[row][col]
+                nr, nc = row + dr, col + dc
+                if dist_from_exit[row][col] > dist_from_exit[nr][nc]:
+                    angle = 0
+                    if (dr, dc) == (0, 1):
+                        angle = 0
+                    elif (dr, dc) == (1, 0):
+                        angle = 90
+                    elif (dr, dc) == (0, -1):
+                        angle = 180
+                    elif (dr, dc) == (-1, 0):
+                        angle = 270
+                    x = col * cell_size - maze_offset_x + cell_size / 2
+                    y = row * cell_size - maze_offset_y + cell_size / 2
+                    glPushMatrix()
+                    glTranslatef(x, y, 1)
+                    glRotatef(angle, 0, 0, 1)
+                    glColor3f(1, 1, 1)
+                    glBegin(GL_TRIANGLES)
+                    glVertex3f(0, 20, 0)
+                    glVertex3f(-10, 0, 0)
+                    glVertex3f(10, 0, 0)
+                    glEnd()
+                    glPopMatrix()
+
+def showScreen():
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    glLoadIdentity()
+    glViewport(0, 0, 1000,800)
+    setupCamera()
+    draw_maze()
+    draw_arrows()
+    for spike in spikes:
+        glPushMatrix()
+        glTranslatef(spike['pos'][0], spike['pos'][1], 0)
+        glColor3f(0.0, 1.0, 0.0)
+        gluCylinder(quad, 10, 0, spike['height'], 10, 10)
+        glPopMatrix()
+    for pos, reward_type in rewards:
+        glPushMatrix()
+        glTranslatef(pos[0], pos[1], pos[2] + 20)
+        if reward_type == 'coin':
+            glColor3f(1, 1, 0)
+            gluSphere(quad, 10, 10, 10)
+        elif reward_type == 'gem':
+            glColor3f(0, 1, 1)
+            gluSphere(quad, 10, 10, 10)
+        elif reward_type == 'sword':
+            glColor3f(1, 0, 0)
+            glRotatef(90, 1, 0, 0)
+            gluCylinder(quad, 5, 5, 30, 10, 10)
+        glPopMatrix()
+    if not is_first_person:
+        draw_player()
+    if is_mobile_enemy_alive:
+        draw_enemy(mobile_enemy_position, 1.0)
+    for enemy in static_enemies:
+        if enemy['alive']:
+            draw_enemy(enemy['pos'], 0.5)
+    draw_text(10, 770, f"Level: {current_level}")
+    draw_text(10, 740, f"Rewards Collected: {current_points}")
+    draw_text(10, 710, f"Enemies Killed: {enemies_killed_count}")
+    draw_text(10, 680, f"Total Points: {cumulative_points + current_points}")
+    draw_text(10, 650, f"Points Needed: {max(0, required_points - current_points)}")
+    if is_game_over:
+        draw_text(400, 400, "Game Over")
+    # Draw restart button
+    glMatrixMode(GL_PROJECTION)
+    glPushMatrix()
+    glLoadIdentity()
+    gluOrtho2D(0, 1000, 0, 800)
+    glMatrixMode(GL_MODELVIEW)
+    glPushMatrix()
+    glLoadIdentity()
+    glColor3f(0.0, 0.5, 1.0)  # Button color
+    glBegin(GL_QUADS)
+    glVertex2f(button_x, button_y)
+    glVertex2f(button_x + button_width, button_y)
+    glVertex2f(button_x + button_width, button_y + button_height)
+    glVertex2f(button_x, button_y + button_height)
+    glEnd()
+    glPopMatrix()
+    glMatrixMode(GL_PROJECTION)
+    glPopMatrix()
+    glMatrixMode(GL_MODELVIEW)
+    draw_text(button_x + 50, button_y + 15, "restart")
+    glutSwapBuffers()
+
+def setupCamera():
+    glMatrixMode(GL_PROJECTION)
+    glLoadIdentity()
+    gluPerspective(90, 1.25, 0.1, 5000)
+    glMatrixMode(GL_MODELVIEW)
+    glLoadIdentity()
+    if is_first_person:
+        angle_radians = math.radians(player_angle)
+        eye_x = player_position[0] + math.cos(angle_radians) * 15
+        eye_y = player_position[1] + math.sin(angle_radians) * 15
+        eye_z = player_position[2] + eye_height
+        target_x = eye_x + math.cos(angle_radians) * 100
+        target_y = eye_y + math.sin(angle_radians) * 100
+        target_z = eye_z
+    else:
+        angle_radians = math.radians(camera_angle)
+        eye_x = player_position[0] + math.cos(angle_radians) * camera_distance
+        eye_y = player_position[1] + math.sin(angle_radians) * camera_distance
+        eye_z = player_position[2] + camera_height
+        target_x = player_position[0]
+        target_y = player_position[1]
+        target_z = player_position[2] + eye_height / 2
+    gluLookAt(eye_x, eye_y, eye_z, target_x, target_y, target_z, 0, 0, 1)
+
+def main():
+    global mazes, previous_time
+    glutInit()
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH)
+    glutInitWindowSize(1000, 800)
+    glutInitWindowPosition(0, 0)
+    glutCreateWindow(b"Maze Explorer")
+    glEnable(GL_DEPTH_TEST)
+    glClearColor(0.0, 0.0, 0.0, 1.0)
+    mazes = generate_mazes()
+    load_level()
+    previous_time = time.time()
+    glutDisplayFunc(showScreen)
+    glutKeyboardFunc(keyboardListener)
+    glutKeyboardUpFunc(keyboardUpListener)
+    glutSpecialFunc(specialKeyListener)
+    glutSpecialUpFunc(specialUpListener)
+    glutMouseFunc(mouseListener)
+    glutIdleFunc(idle)
+    glutMainLoop()
+
+if __name__ == "__main__":
+    main()
