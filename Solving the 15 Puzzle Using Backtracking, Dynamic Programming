@@ -1,0 +1,115 @@
+1. Backtracking Approach (Part A)
+a) Implement the backtracking algorithm:
+Pseudocode for Backtracking:
+
+def BACKTRACK(state, visited):
+    if state == GOAL:
+        return True
+    for move in possible_moves(state):
+        new_state = apply_move(state, move)
+        if new_state not in visited:
+            visited.add(new_state)
+            if BACKTRACK(new_state, visited):
+                return True
+            visited.remove(new_state)
+    return False
+
+b) Print whether the puzzle is solvable and the path taken:
+
+def solve_puzzle_backtracking(initial_state):
+    visited = set()
+    path = []
+    if BACKTRACK(initial_state, visited):
+        print("Puzzle is solvable!")
+        print("Solution Path:", path)
+    else:
+        print("Puzzle is not solvable!")
+2. Dynamic Programming Approach (Part B)
+a) Implement DP with memoization:
+
+Pseudocode for DP (Memoization):
+
+def DP_SOLVE(state, memo):
+    if state == GOAL:
+        return 0
+    if state in memo:
+        return memo[state]
+    min_steps = float('inf')
+    for move in possible_moves(state):
+        new_state = apply_move(state, move)
+        steps = DP_SOLVE(new_state, memo)
+        if steps != -1:
+            min_steps = min(min_steps, 1 + steps)
+    memo[state] = -1 if min_steps == float('inf') else min_steps
+    return memo[state]
+
+b) Compare runtime with pure backtracking:
+
+we need to time both algorithms and compare the runtime for different initial states (scrambles).
+
+import time
+
+start_time = time.time()
+Call backtracking function
+backtracking_time = time.time() - start_time
+
+start_time = time.time()
+ Call DP with memoization function
+dp_time = time.time() - start_time
+
+print(f"Backtracking Time: {backtracking_time}")
+print(f"DP Time: {dp_time}")
+3. Extensions (Optional)
+
+Reconstruct the solution path: we can store the moves at each step and backtrack from the goal to the initial state.
+
+Implement BFS for shortest path: BFS explores all states level by level, ensuring the shortest path is found first.
+
+BFS Implementation:
+
+from collections import deque
+
+def BFS(initial_state):
+    queue = deque([(initial_state, [])])
+    visited = set()
+    while queue:
+        state, path = queue.popleft()
+        if state == GOAL:
+            return path
+        for move in possible_moves(state):
+            new_state = apply_move(state, move)
+            if new_state not in visited:
+                visited.add(new_state)
+                queue.append((new_state, path + [move]))
+    return None
+
+
+Implement A with Manhattan distance heuristic:*
+A* is an informed search algorithm that uses a heuristic to estimate the distance to the goal.
+
+import heapq
+
+def A_star(initial_state):
+    def manhattan_distance(state):
+        distance = 0
+        for i, tile in enumerate(state):
+            if tile != 0:
+                x1, y1 = divmod(i, N)
+                x2, y2 = divmod(tile - 1, N)
+                distance += abs(x1 - x2) + abs(y1 - y2)
+        return distance
+
+    open_list = []
+    heapq.heappush(open_list, (0 + manhattan_distance(initial_state), 0, initial_state, []))
+    visited = set()
+    
+    while open_list:
+        _, g, state, path = heapq.heappop(open_list)
+        if state == GOAL:
+            return path
+        if state not in visited:
+            visited.add(state)
+            for move in possible_moves(state):
+                new_state = apply_move(state, move)
+                heapq.heappush(open_list, (g + 1 + manhattan_distance(new_state), g + 1, new_state, path + [move]))
+    return None
